@@ -1,0 +1,122 @@
+pipeline {
+    options {
+        // 抛弃旧构建
+        buildDiscarder(logRotator(daysToKeepStr: '30', numToKeepStr: '15'))
+    }
+    agent {
+        // jenkins需要挂载/root/.docker/config.json，或者jenkins的docker有docker私有仓库的登录认证
+        docker {
+            image '10.28.25.211:8082/base/builder:1.0.4'
+            // 挂载settings.xml，使用私服。需要再jenkins的宿主机配置/root/.m2/settings.xml
+            args '-v /root/.m2:/root/.m2 -v /var/run/docker.sock:/var/run/docker.sock -v /root/.ssh:/root/.ssh'
+        }
+    }
+
+    environment {
+        DOCKER_REGISTRY = '10.28.25.211:8082'
+        DOCKER_REGISTRY_ONLINE = 'swr.cn-south-1.myhuaweicloud.com'
+        GITURL  = sh(returnStdout: true, script: 'git remote -v | grep fetch | awk \'{print $2}\'')
+    }
+
+    parameters {
+        gitParameter(name: 'BRANCH', branchFilter: 'origin/(master|release.*|feature.*)', defaultValue: 'master', selectedValue: 'DEFAULT', sortMode: 'DESCENDING_SMART', type: 'PT_BRANCH', description: 'Git分支参数')
+
+        choice(name: 'PROFILE_ACTIVE', description: 'maven和应用的profile激活，dev为开发环境，online为线上环境',
+                                                              choices: ['uat','online']
+                                                            )
+        booleanParam(name: 'TENANT_ENABLE', defaultValue: false, description: '是否开启多租户')
+        string(name: 'SERVER_PORT', defaultValue: '81', description: 'authentication-server模块启动端口')
+        string(name: 'JVM_DEBUG_PORT', defaultValue: '6004', description: 'authentication-server模块JVM Debug启动端口')
+        string(name: 'LOG_DIR', defaultValue: '/opt/icyfenix/authentication-server/log', description: 'authentication-server日志挂载目录')
+
+        choice(name: 'DEPLOY_LIST', description: '部署机器列表',
+                              choices: ['52.131.236.165','52.131.235.175','52.130.176.197']
+                            )
+        string(name: 'MEMORY', defaultValue: '1100m', description: '限制容器使用的最大内存')
+        string(name: 'CPU_SHARES', defaultValue: '1024', description: '用于设置多个容器竞争CPU时，各个容器相对能分配到的CPU时间比例，CPU密集型任务可以设置大一些')
+        string(name: 'Xms', defaultValue: '100m', description: 'JVM初始启动内存')
+        string(name: 'Xmx', defaultValue: '1000m', description: 'JVM最大内存')
+        choice(name: 'REMOTE_JVM_DEBUG', description: '远程JVM debug',
+                choices: ['-agentlib:jdwp=transport=dt_socket,server=y,suspend=n,address=6005','']
+              )
+
+        string(name: 'SUCCESS_RECIPIENT_LIST', defaultValue: 'liuchuang@csc-sz.cn', description: '构建成功邮件通知列表')
+        string(name: 'FAILURE_RECIPIENT_LIST', defaultValue: 'liuchuang@csc-sz.cn', description: '构建失败邮件通知列表')
+    }
+
+    stages {
+        stage('Build') {
+            steps {
+                //credentialsId：开发和测试环境请在自己目录下创建凭据，将凭据ID修改为自己的
+                checkout([$class: 'GitSCM', branches: [[name: "${params.BRANCH}"]], extensions: [[$class: 'CleanBeforeCheckout']], userRemoteConfigs: [[credentialsId: 'bitadmin', url: "${GITURL}"]]])
+                // -am --also-make : 所依赖的模块也编译，很耗时
+                sh 'mvn -B -DskipTests clean package -P${PROFILE_ACTIVE} -pl bookstore-servicemesh-domain-authentication'
+                archiveArtifacts artifacts: '**/target/*.jar', fingerprint: true
+            }
+        }
+        stage('Deploy') {
+            steps {
+                sh 'mvn -B -DskipTests deploy -P${PROFILE_ACTIVE}  -pl bookstore-servicemesh-domain-authentication'
+            }
+        }
+
+        stage('Deliver-uat') {
+            environment {
+                VERSION = sh(returnStdout: true, script: 'xmllint --xpath \'/*[local-name()="project"]/*[local-name()="version"]/text()\' bookstore-servicemesh-domain-authentication/pom.xml')
+            }
+            when {
+                equals expected: 'uat',
+                actual: "${params.PROFILE_ACTIVE}"
+            }
+            steps {
+               echo "---------Deliver for authentication-server, start----------"
+               // 获取模块的artifactId、version
+               sh 'echo -n csc_back/authentication-server: > docker_tag'
+               sh 'echo -n $(xmllint --xpath \'/*[local-name()="project"]/*[local-name()="version"]/text()\' csc-module-authentication/pom.xml) >> docker_tag'
+
+               // docker build
+               sh 'cp bookstore-servicemesh-domain-authentication/target/*.jar bookstore-servicemesh-domain-authentication/target/dockerfile'
+               sh 'docker build -t `cat docker_tag` ./bookstore-servicemesh-domain-authentication/target/dockerfile/'
+               sh 'docker tag `cat docker_tag` ${DOCKER_REGISTRY_ONLINE}/`cat docker_tag`'
+               // 登录华为云docker仓库
+               withCredentials([usernamePassword(credentialsId: 'hw-swr', passwordVariable: 'password', usernameVariable: 'username')]) {
+                    sh 'docker login -u ${username} -p ${password} ${DOCKER_REGISTRY_ONLINE}'
+               }
+               sh 'docker push ${DOCKER_REGISTRY_ONLINE}/`cat docker_tag`'
+
+                // ssh登录部署机器
+                sshagent(credentials: ['cloud']) {
+                    sh 'ssh-keyscan -H ${DEPLOY_LIST} >> ~/.ssh/known_hosts'
+                    // 启动docker容器
+                    // 登录Azure docker仓库
+                    withCredentials([usernamePassword(credentialsId: 'hw-swr', passwordVariable: 'password', usernameVariable: 'username')]) {
+                         sh 'ssh cscadmin@${DEPLOY_LIST} docker login -u ${username} -p ${password} ${DOCKER_REGISTRY_ONLINE}'
+                    }
+                    sh 'ssh cscadmin@${DEPLOY_LIST} docker pull ${DOCKER_REGISTRY_ONLINE}/`cat docker_tag`'
+                    sh 'ssh cscadmin@${DEPLOY_LIST} docker rm -f $(cut -d: -f1 docker_tag | tr / .) ||  true'
+                    sh 'ssh cscadmin@${DEPLOY_LIST} docker run -d \
+                            -e PROFILE_ACTIVE=${PROFILE_ACTIVE} \
+                            -e SERVER_PORT=${SERVER_PORT} \
+                            -e DISCOVERY_IP=${DEPLOY_LIST} \
+                            -e TENANT_ENABLE=${TENANT_ENABLE} \
+                            -p ${SERVER_PORT}:${SERVER_PORT} \
+                            -p ${JVM_DEBUG_PORT}:6005 \
+                            -v ${LOG_DIR}:/opt/icyfenix/authentication-server/log \
+                            --log-opt max-size=1000m --log-opt max-file=2 \
+                            --restart always \
+                            --cap-add=SYS_PTRACE \
+                            -m ${MEMORY}  -c ${CPU_SHARES} \
+                            --name $(cut -d: -f1 docker_tag | tr / .) ${DOCKER_REGISTRY_ONLINE}/`cat docker_tag` \
+                            -s ${Xms} -x ${Xmx} -d ${REMOTE_JVM_DEBUG}'
+                }
+
+               echo "---------Deliver for authentication-server, end----------"
+            }
+
+
+        }
+
+
+
+    }
+}

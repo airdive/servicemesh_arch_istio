@@ -8,8 +8,17 @@
         <version>1.0.0-SNAPSHOT</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
+    <version>1.0.0-SNAPSHOT</version>
 
     <artifactId>bookstore-servicemesh-domain-frontend</artifactId>
+
+    <properties>
+        <serverId>nexus</serverId>
+        <docker.registry>10.28.25.211:8082</docker.registry>
+        <docker.image.suffix>icyfenix</docker.image.suffix>
+        <skipDocker>false</skipDocker>
+        <docker.host>http://10.28.25.211:2375</docker.host>
+    </properties>
 
     <dependencies>
         <dependency>
@@ -21,8 +30,173 @@
     <build>
         <plugins>
             <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <version>3.1.0</version>
+                <executions>
+                    <execution>
+                        <id>copy-resources</id>
+                        <!-- here the phase you need -->
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <!-- 复制资源后的输出目录 -->
+                            <outputDirectory>${basedir}/target/docker</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${basedir}/</directory>
+                                    <includes>
+                                        <include>Dockerfile</include>
+                                    </includes>
+                                    <filtering>true</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+                <configuration>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+            <plugin>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <fork>true</fork>
+                </configuration>
+            </plugin>
+
+            <!-- docker插件 -->
+            <plugin>
+                <groupId>com.spotify</groupId>
+                <artifactId>docker-maven-plugin</artifactId>
+                <version>1.2.0</version>
+                <configuration>
+                    <skipDocker>${skipDocker}</skipDocker>
+                    <!-- 私有仓库配置，需要settings.xml文件配合serverId对应的服务地址 -->
+                    <serverId>${serverId}</serverId>
+                    <!-- docker私服地址 -->
+                    <registryUrl>${docker.registry}</registryUrl>
+                    <!-- docker的构建目录（构建上下文），包含Dockerfile  -->
+                    <dockerDirectory>${project.basedir}/target/docker</dockerDirectory>
+                    <imageTags>
+                        <imageTag>${project.version}</imageTag>
+                    </imageTags>
+                    <!-- 指定docker server的地址，该配置不需要本机安装docker -->
+                    <dockerHost>${docker.host}</dockerHost>
+                    <resources>
+                        <resource>
+                            <targetPath>/</targetPath>
+                            <directory>${project.build.directory}</directory>
+                            <include>${project.build.finalName}.jar</include>
+                        </resource>
+                    </resources>
+                </configuration>
+                <executions>
+                    <!-- package之前清除上一次构建的image -->
+                    <execution>
+                        <id>remove-image</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>removeImage</goal>
+                        </goals>
+                        <configuration>
+                            <imageName>
+                                ${docker.image.suffix}/bookstore-istio-domain-frontend
+                            </imageName>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>remove-tag-image</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>removeImage</goal>
+                        </goals>
+                        <configuration>
+                            <imageName>
+                                ${docker.registry}/${docker.image.suffix}/bookstore-istio-domain-frontend
+                            </imageName>
+                            <imageTags>
+                                <imageTag>${project.version}</imageTag>
+                                <imageTag>latest</imageTag>
+                            </imageTags>
+                        </configuration>
+                    </execution>
+                    <!-- 将docker:build绑定到package这个phase  -->
+                    <execution>
+                        <id>build-image</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>build</goal>
+                        </goals>
+                        <configuration>
+                            <!-- imageName中若不指定tag，则会打上latest -->
+                            <imageName>${docker.image.suffix}/bookstore-istio-domain-frontend:${project.version}</imageName>
+                            <!-- 可以使用<imageTags>标签打其他额外的tag -->
+                        </configuration>
+                    </execution>
+                    <!-- 将docker:tag绑定到package这个phase  -->
+                    <execution>
+                        <id>tag-image</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>tag</goal>
+                        </goals>
+                        <configuration>
+                            <!-- docker tag IMAGE[:TAG] [REGISTRY_HOST[:REGISTRY_PORT]/]REPOSITORY[:TAG]  -->
+                            <!-- images与IMAGE[:TAG]对应，必须在build阶段已经构建了 -->
+                            <image>${docker.image.suffix}/bookstore-istio-domain-frontend:${project.version}</image>
+                            <!-- newName与tag命令的第二个参数对应 -->
+                            <newName>
+                                ${docker.registry}/${docker.image.suffix}/bookstore-istio-domain-frontend:${project.version}
+                            </newName>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>tag-image-latest</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>tag</goal>
+                        </goals>
+                        <configuration>
+                            <!-- docker tag IMAGE[:TAG] [REGISTRY_HOST[:REGISTRY_PORT]/]REPOSITORY[:TAG]  -->
+                            <!-- images与IMAGE[:TAG]对应，必须在build阶段已经构建了 -->
+                            <image>topband_back/bookstore-istio-domain-frontend:${project.version}</image>
+                            <!-- newName与tag命令的第二个参数对应 -->
+                            <newName>
+                                ${docker.registry}/${docker.image.suffix}/bookstore-istio-domain-frontend:latest
+                            </newName>
+                        </configuration>
+                    </execution>
+                    <!-- 将docker:push绑定到deploy这个phase  -->
+                    <execution>
+                        <id>push-image</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>push</goal>
+                        </goals>
+                        <configuration>
+                            <imageName>
+                                ${docker.registry}/${docker.image.suffix}/bookstore-istio-domain-frontend:${project.version}
+                            </imageName>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>push-image-latest</id>
+                        <phase>deploy</phase>
+                        <goals>
+                            <goal>push</goal>
+                        </goals>
+                        <configuration>
+                            <imageName>
+                                ${docker.registry}/${docker.image.suffix}/bookstore-istio-domain-frontend:latest
+                            </imageName>
+                        </configuration>
+                    </execution>
+                </executions>
+
             </plugin>
         </plugins>
     </build>

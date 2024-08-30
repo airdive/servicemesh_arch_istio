@@ -1,4 +1,4 @@
-FROM openjdk:12-alpine
+FROM docker.m.daocloud.io/openjdk:12-alpine
 
 MAINTAINER icyfenix
 
@@ -7,7 +7,7 @@ ENV SPRING_OUTPUT_ANSI_ENABLED=ALWAYS \
     PORT=80 \
     PROFILES="default"
 
-ADD /target/*.jar /bookstore-account.jar
+ADD *.jar /bookstore-account.jar
 
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /bookstore-account.jar --spring.config.location=/config/application.yaml --spring.profiles.active=$PROFILES"]
 

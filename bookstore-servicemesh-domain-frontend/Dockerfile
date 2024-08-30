@@ -1,4 +1,4 @@
-FROM openjdk:12-alpine
+FROM docker.m.daocloud.io/openjdk:12-alpine
 
 MAINTAINER icyfenix
 
@@ -7,7 +7,7 @@ ENV SPRING_OUTPUT_ANSI_ENABLED=ALWAYS \
     PORT=80 \
     PROFILES="default"
 
-ADD /target/*.jar /gateway.jar
+ADD *.jar /gateway.jar
 
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /gateway.jar --spring.profiles.active=$PROFILES"]
 
