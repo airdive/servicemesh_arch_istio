@@ -20,14 +20,14 @@
     </parent>
     <groupId>com.github.fenixsoft</groupId>
     <artifactId>bookstore-servicemesh-istio</artifactId>
-    <version>1.0.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>bookstore-servicemesh-istio</name>
     <description>Service Mesh Architecture Demonstrate with Istio Infrastructure</description>
 
     <properties>
         <java.version>1.8</java.version>
         <argLine>-Dfile.encoding=UTF-8</argLine>
-        <revision>1.0.0-SNAPSHOT</revision>
+        <revision>1.0.0</revision>
     </properties>
 
     <build>
